@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Agent Mission Control - Dashboard</title>
+  </head>
+  <body>
+    <h1>Run History</h1>
+    <ul>
+      {% for run in runs %}
+      <li>
+        <a href="{{ url_for('trace_view', run_id=run.id) }}">{{ run.id }}</a>
+      </li>
+      {% endfor %}
+    </ul>
+  </body>
+</html>

@@ -1,0 +1,14 @@
+Je veux creer une application web pour gérer des contrats de maintenance. L'application doit être simple et fonctionner avec une base de données SQLite.
+
+Voici les fonctionnalités requises :
+1. Une page d'accueil (formulaire) pour créer un nouveau contrat. Les champs à renseigner sont : 'nom_client', 'date_debut', 'date_fin', et 'description_service'.
+2. Lorsque le formulaire est soumis, les informations doivent être sauvegardées dans une base de données SQLite nommée 'contrats.db'. La table doit s'appeler 'contrats'.
+3. Une deuxième page qui affiche la liste de tous les contrats existants sous forme de tableau.
+4. Sur la page de liste, chaque contrat doit avoir un lien pour le 'Modifier' et un bouton pour le 'Supprimer'.
+5. La page de modification doit pré-remplir un formulaire avec les informations du contrat sélectionné et permettre de les sauvegarder.
+
+aucune authentification est requise.
+utiliser le framework Flask.
+aucune validation de données nécéssaire.
+
+

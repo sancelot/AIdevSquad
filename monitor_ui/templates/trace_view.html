@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Trace: {{ run_id }}</title>
+    <!-- diff2html Library -->
+    <link
+      rel="stylesheet"
+      type="text/css"
+      href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css"
+    />
+    <script
+      type="text/javascript"
+      src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html.min.js"
+    ></script>
+    <style>
+      body {
+        font-family: sans-serif;
+        line-height: 1.6;
+      }
+      .collapsible {
+        cursor: pointer;
+        user-select: none;
+        padding: 5px;
+        border-radius: 3px;
+        font-weight: bold;
+        position: relative;
+      }
+      .collapsible:hover {
+        background-color: #f0f0f0;
+      }
+      .content {
+        display: none;
+        padding-left: 20px;
+        border-left: 2px solid #ccc;
+        margin-left: 10px;
+      }
+      pre {
+        background-color: #f4f4f4;
+        padding: 10px;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        border-radius: 5px;
+        font-family: monospace;
+      }
+      h2 {
+        border-bottom: 2px solid #333;
+        padding-bottom: 5px;
+        margin-top: 40px;
+        position: relative;
+      }
+      h3 {
+        border-bottom: 1px solid #ccc;
+        padding-bottom: 5px;
+      }
+      .issues-list {
+        list-style-type: none;
+        padding-left: 0;
+      }
+      .issue {
+        border-left: 4px solid #ccc;
+        padding: 10px;
+        margin-bottom: 10px;
+        background-color: #fafafa;
+      }
+      .issue-severity-critical {
+        border-left-color: #dc3545;
+      }
+      .issue-severity-major {
+        border-left-color: #fd7e14;
+      }
+      .issue-severity-minor {
+        border-left-color: #ffc107;
+      }
+      .issue-severity-suggestion {
+        border-left-color: #17a2b8;
+      }
+      .issue code {
+        background-color: #e9ecef;
+        padding: 2px 4px;
+        border-radius: 3px;
+      }
+      .d2h-file-header {
+        background-color: #f8f9fa !important;
+      }
+      .timestamp {
+        font-family: monospace;
+        font-size: 0.8em;
+        color: #6c757d;
+        font-weight: normal;
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+      }
+      .duration {
+        color: #28a745;
+        margin-left: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Trace View: <span id="run-id">{{ run_id }}</span></h1>
+    <p>
+      Status: <b id="run-status">Loading...</b> | Total Duration:
+      <b id="total-duration">N/A</b>
+    </p>
+
+    <div id="timeline"></div>
+
+    <script>
+      // --- STATE AND CONSTANTS ---
+      const openStates = new Set();
+      const runId = document.getElementById("run-id").textContent;
+      const timeline = document.getElementById("timeline");
+      const runStatus = document.getElementById("run-status");
+      const totalDurationElem = document.getElementById("total-duration");
+      let intervalId = null;
+
+      function formatTimestamp(isoString) {
+        if (!isoString || typeof isoString !== "string") return "N/A";
+        try {
+          // USE 'new' TO CREATE A DATE OBJECT
+          const date = new Date(isoString);
+          if (isNaN(date.getTime())) {
+            return "Invalid Date";
+          }
+          return date.toLocaleTimeString();
+        } catch (e) {
+          console.error("Error parsing timestamp:", isoString, e);
+          return "Parse Error";
+        }
+      }
+
+      function calculateDuration(startISO, endISO) {
+        if (!startISO || !endISO) return "";
+        try {
+          // USE 'new' HERE AS WELL
+          const start = new Date(startISO);
+          const end = new Date(endISO);
+          if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+            return "";
+          }
+          const seconds = (end - start) / 1000;
+          return seconds >= 0 ? `(${seconds.toFixed(2)}s)` : "";
+        } catch (e) {
+          console.error("Error calculating duration:", startISO, endISO, e);
+          return "(Error)";
+        }
+      }
+
+      function escapeHtml(unsafe) {
+        if (typeof unsafe !== "string") {
+          // If it's not a string, stringify it before escaping
+          try {
+            unsafe = JSON.stringify(unsafe, null, 2);
+          } catch (e) {
+            unsafe = String(unsafe);
+          }
+        }
+        return unsafe
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+      }
+
+      // --- RENDERING LOGIC ---
+      function renderEvent(event, prevEvent) {
+        const container = document.createElement("div");
+        container.className = "event-container";
+        let content_pretty;
+        const duration = calculateDuration(
+          prevEvent ? prevEvent.timestamp : null,
+          event.timestamp
+        );
+        const time_html = `<span class="timestamp">${formatTimestamp(
+          event.timestamp
+        )} <span class="duration">${duration}</span></span>`;
+
+        // Default to returning an object with a null postRender task
+        let renderOutput = { element: container, postRender: null };
+
+        switch (event.type) {
+          case "llm_call":
+            container.innerHTML = `<div class="collapsible event-header">▶️ <strong>LLM Call</strong> (Agent: ${
+              event.agent_name
+            }) ${time_html}</div><div class="content"><pre>${escapeHtml(
+              event.prompt
+            )}</pre></div>`;
+            break;
+          case "llm_response":
+            container.innerHTML = `<div class="collapsible event-header">◀️ <strong>LLM Response</strong> ${time_html}</div><div class="content"><pre>${escapeHtml(
+              event.response
+            )}</pre></div>`;
+            break;
+          case "thought":
+            container.innerHTML = `<p><strong>🧠 Thought:</strong> <em>${escapeHtml(
+              event.thought
+            )}</em> ${time_html}</p>`;
+            break;
+          case "tool_call":
+            content_pretty = JSON.stringify(event.tool_args, null, 2);
+            container.innerHTML = `<div class="collapsible event-header">▶️ <strong>Action:</strong> Calling <code>${escapeHtml(
+              event.tool_name
+            )}</code> ${time_html}</div><div class="content"><strong>Arguments:</strong><pre>${escapeHtml(
+              content_pretty
+            )}</pre></div>`;
+            break;
+          case "tool_result":
+            // --- NOUVELLE LOGIQUE POUR GÉRER LES ERREURS ---
+            const isError =
+              event.is_error ||
+              (typeof event.result === "string" &&
+                event.result.toUpperCase().startsWith("ERROR:"));
+
+            const headerText = isError
+              ? "❌ Observation (ERROR)"
+              : "◀️ Observation (Tool Result)";
+            const headerColor = isError ? 'style="color: red;"' : "";
+
+            content_pretty =
+              typeof event.result === "object"
+                ? JSON.stringify(event.result, null, 2)
+                : event.result;
+
+            container.innerHTML = `
+                <div class="collapsible event-header" ${headerColor}>${headerText} ${time_html}</div>
+                <div class="content"><pre>${escapeHtml(
+                  content_pretty
+                )}</pre></div>`;
+            break;
+          case "finish":
+            container.innerHTML = `<p><strong>✅ Finish:</strong> Agent has completed the task. ${time_html}</p>`;
+            break;
+          case "review_result":
+            if (event.issues && event.issues.length > 0) {
+              let issuesHtml = '<ul class="issues-list">';
+              event.issues.forEach((issue) => {
+                issuesHtml += `
+                            <li class="issue issue-severity-${issue.severity}">
+                                <strong>${escapeHtml(
+                                  issue.severity.toUpperCase()
+                                )}</strong> (${escapeHtml(
+                  issue.type
+                )}) in <code>${escapeHtml(issue.file)}:${issue.line}</code><br>
+                                <em>${escapeHtml(issue.description)}</em><br>
+                                <strong>Suggestion:</strong> <code>${escapeHtml(
+                                  issue.suggestion
+                                )}</code>
+                            </li>`;
+              });
+              issuesHtml += "</ul>";
+              container.innerHTML = `<div><p><strong>⚠️ Review Found Issues:</strong></p>${issuesHtml}</div>`;
+            } else {
+              container.innerHTML = `<p><strong>✅ Review Passed:</strong> No issues found.</p>`;
+            }
+            break;
+          case "git_diff":
+            // The container will be the target for diff2html
+            container.id = `diff-container-${Date.now()}-${Math.random()}`; // Unique ID
+            container.innerHTML = `<div class="collapsible event-header">▶️ <strong>Code Changes Submitted for Review</strong> ${time_html}</div>`;
+
+            // This postRender logic is what displays the diff. It's crucial.
+            renderOutput.postRender = () => {
+              const diffString = event.diff || "No changes detected.";
+              const diffJson = Diff2Html.parse(diffString);
+              const diffHtml = Diff2Html.html(diffJson, {
+                drawFileList: true,
+                outputFormat: "side-by-side",
+                matching: "lines",
+              });
+              const targetElement = document.getElementById(container.id);
+              const contentDiv = document.createElement("div");
+              contentDiv.className = "content";
+              contentDiv.innerHTML = diffHtml;
+              targetElement.appendChild(contentDiv);
+            };
+            break;
+          default:
+            content_pretty = JSON.stringify(event, null, 2);
+            container.innerHTML = `<div class="collapsible">▶️ <strong>Unknown Event:</strong> ${
+              event.type
+            } ${time_html}</div><div class="content"><pre>${escapeHtml(
+              content_pretty
+            )}</pre></div>`;
+        }
+        return renderOutput;
+      }
+
+      function fullRender(traceData) {
+        timeline.innerHTML = "";
+        let elementCounter = 0;
+        const postRenderTasks = [];
+
+        traceData.forEach((entry) => {
+          if (entry.type === "phase") {
+            const el = document.createElement("h2");
+            el.innerHTML = `PHASE: ${
+              entry.name
+            } <span class="timestamp">${formatTimestamp(
+              entry.timestamp
+            )}</span>`;
+            timeline.appendChild(el);
+          } else if (entry.type === "task") {
+            const id = `el-${elementCounter++}`;
+            const isOpen = openStates.has(id);
+            const container = document.createElement("div");
+            const header = document.createElement("div");
+            header.className = "collapsible task";
+            header.dataset.id = id;
+            header.innerHTML = `${isOpen ? "▼" : "▶"} <strong>Task ${
+              entry.number
+            }/${entry.total}:</strong> ${escapeHtml(
+              entry.description
+            )} <span class="timestamp">${formatTimestamp(
+              entry.timestamp
+            )}</span>`;
+            const content = document.createElement("div");
+            content.className = "content";
+            if (isOpen) content.style.display = "block";
+
+            (entry.steps || []).forEach((step) => {
+              const stepId = `el-${elementCounter++}`;
+              const isStepOpen = openStates.has(stepId);
+              const stepHeader = document.createElement("div");
+              stepHeader.className = "collapsible step";
+              stepHeader.dataset.id = stepId;
+              stepHeader.innerHTML = `${isStepOpen ? "▼" : "▶"} Step ${
+                step.number
+              }/${step.max} <span class="timestamp">${formatTimestamp(
+                step.timestamp
+              )}</span>`;
+              const stepContent = document.createElement("div");
+              stepContent.className = "content";
+              if (isStepOpen) stepContent.style.display = "block";
+
+              let lastEventInStep = null;
+              (step.events || []).forEach((event) => {
+                const renderOutput = renderEvent(event, lastEventInStep);
+                if (renderOutput && renderOutput.element) {
+                  stepContent.appendChild(renderOutput.element);
+                  if (renderOutput.postRender) {
+                    postRenderTasks.push(renderOutput.postRender);
+                  }
+                }
+                lastEventInStep = event;
+              });
+              content.appendChild(stepHeader);
+              content.appendChild(stepContent);
+            });
+            container.appendChild(header);
+            container.appendChild(content);
+            timeline.appendChild(container);
+          } else if (entry.type === "final_summary") {
+            totalDurationElem.textContent = `${entry.total_duration_seconds.toFixed(
+              2
+            )}s`;
+          }
+        });
+        postRenderTasks.forEach((task) => task());
+        attachCollapsibleListeners();
+      }
+
+      function attachCollapsibleListeners() {
+        document.querySelectorAll(".collapsible").forEach((item) => {
+          if (item.getAttribute("listenerAttached")) return;
+          item.setAttribute("listenerAttached", "true");
+          item.addEventListener("click", (e) => {
+            // Stop the event from bubbling up to parent collapsibles
+            e.stopPropagation();
+            const id = item.dataset.id;
+            const content = item.nextElementSibling;
+            if (!content || !content.classList.contains("content")) return;
+
+            if (content.style.display === "block") {
+              content.style.display = "none";
+              item.innerHTML = item.innerHTML.replace("▼", "▶");
+              openStates.delete(id);
+            } else {
+              content.style.display = "block";
+              item.innerHTML = item.innerHTML.replace("▶", "▼");
+              openStates.add(id);
+            }
+          });
+        });
+      }
+
+      async function fetchData() {
+        try {
+          const response = await fetch(`/api/trace/${runId}`);
+          if (!response.ok)
+            throw new Error(`HTTP error! status: ${response.status}`);
+          const data = await response.json();
+          if (data.error) throw new Error(data.error);
+          fullRender(data.trace);
+          if (data.is_running) {
+            runStatus.textContent = "In Progress (updates every 5s)";
+            runStatus.style.color = "blue";
+          } else {
+            runStatus.textContent = "Completed";
+            runStatus.style.color = "green";
+            if (intervalId) clearInterval(intervalId);
+          }
+        } catch (error) {
+          console.error("Failed to fetch trace data:", error);
+          runStatus.textContent = "Error loading data.";
+          runStatus.style.color = "red";
+          if (intervalId) clearInterval(intervalId);
+        }
+      }
+
+      // --- Main Logic ---
+      fetchData();
+      intervalId = setInterval(fetchData, 60000); // Poll every 5 seconds
+    </script>
+  </body>
+</html>

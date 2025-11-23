@@ -1,0 +1,21 @@
+# .gitignore
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# IDE files
+.idea/
+.vscode/
+
+# Project Outputs
+*_workspace/
+logs/
+
+# Environment
+.env
+
+projects/

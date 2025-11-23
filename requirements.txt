@@ -1,0 +1,11 @@
+docker 
+python-dotenv
+llama-index-core
+llama-index-llms-ollama
+llama-index-embeddings-ollama
+llama-index-llms-google-genai
+llama-index-embeddings-google-genai
+gitpython
+google-api-core
+flask
+black
