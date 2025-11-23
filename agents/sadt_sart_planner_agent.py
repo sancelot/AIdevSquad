@@ -30,12 +30,26 @@ Rules:
 - Provide meaningful IDs (T1, T1.1, T1.1.1, ...)
 - For each task fill icom fields concisely.
 - Provide at most 8 top-level tasks.
-- Output only valid JSON.
+- Output only valid JSON. Do not include any text outside the JSON block.
 """
         prompt = f"PROJECT TITLE: {project_title}\n\nPROJECT CONTEXT:\n{project_context}"
 
-        response_str = self._call_llm(system_message, prompt, logger)
-        return parse_json_from_response(response_str)
+        max_retries = 3
+        for attempt in range(max_retries):
+            response_str = self._call_llm(system_message, prompt, logger)
+            plan = parse_json_from_response(response_str)
+            if plan:
+                return plan
+
+            if logger:
+                logger.log(
+                    "WARNING", f"Attempt {attempt+1} failed to parse JSON workplan. Retrying...")
+            prompt += f"\n\nPREVIOUS ATTEMPT FAILED. Please ensure the output is strictly valid JSON. Do not add trailing commas or comments."
+
+        if logger:
+            logger.log(
+                "ERROR", "Failed to generate valid JSON workplan after multiple attempts.")
+        return None
 
     def generate_atomic_actions_for_task(self, task, logger=None):
         system_message = """You are given a TASK JSON object with fields (id, title, description, icom).
@@ -61,8 +75,19 @@ Rules:
         }
         prompt = f"TASK:\n{json.dumps(task_subset, ensure_ascii=False, indent=2)}"
 
-        response_str = self._call_llm(system_message, prompt, logger)
-        return parse_json_from_response(response_str)
+        max_retries = 3
+        for attempt in range(max_retries):
+            response_str = self._call_llm(system_message, prompt, logger)
+            actions = parse_json_from_response(response_str)
+            if actions:
+                return actions
+
+            if logger:
+                logger.log(
+                    "WARNING", f"Attempt {attempt+1} failed to parse JSON atomic actions. Retrying...")
+            prompt += f"\n\nPREVIOUS ATTEMPT FAILED. Please ensure the output is strictly valid JSON."
+
+        return None
 
     def _flatten_tasks(self, tasks, parent_id=""):
         flat_tasks = []
@@ -93,23 +118,19 @@ Technical Architecture:
         workplan = self.generate_workplan(
             project_title, project_context, logger)
 
-        if not workplan or "tasks" not in workplan:
-            logger.log("ERROR", "Failed to generate workplan.")
+        if not workplan:
+            logger.log("ERROR", "generate_workplan returned None.")
+            return [], ""
+
+        if "tasks" not in workplan:
+            logger.log(
+                "ERROR", f"Workplan missing 'tasks' key. Keys found: {workplan.keys()}")
             return [], ""
 
         # Flatten the hierarchical tasks to process them linearly for atomic action generation
-        # Note: In a real SART flow, we might respect the hierarchy more, but for the orchestrator's linear execution, we flatten.
-        # However, we only want to generate atomic actions for the LEAF nodes or process all nodes?
-        # The user's example flattens ALL tasks and generates actions for them.
-        # But usually, only leaf tasks are executed.
-        # Let's assume we generate actions for all tasks in the flattened list,
-        # but the prompt implies "split tasks until each atomic task is roughly a single LLM prompt-sized action".
-        # So the leaf nodes of the workplan are the ones we really care about for execution.
-        # But the user's code does: `tasks = flatten_tasks_to_list(plan.get("tasks", []))` and then `generate_atomic_actions_for_task(t)` for EACH task.
-        # This implies even high-level tasks might have atomic actions (maybe coordination actions?).
-        # Let's follow the user's example: flatten all tasks and generate actions for each.
-
         all_tasks = self._flatten_tasks(workplan.get("tasks", []))
+
+        logger.log("INFO", f"Flattened tasks count: {len(all_tasks)}")
 
         final_plan_strings = []
 
@@ -118,21 +139,17 @@ Technical Architecture:
 
         for task in all_tasks:
             # If a task has subtasks, it might be a container.
-            # If we generate actions for it, they might be redundant with subtasks.
-            # But let's stick to the user's logic.
-            # Optimization: If a task has subtasks, maybe we skip generating actions for IT directly,
-            # and only generate for the subtasks?
-            # The user's prompt says "split tasks until each atomic task is..."
-            # If I have T1 and T1.1, T1.2. T1 is the parent.
-            # If I execute T1 actions AND T1.1 actions, I might duplicate work.
-            # Let's check if the task has subtasks. If yes, we might skip it and rely on subtasks.
             if task.get("subtasks") and len(task.get("subtasks")) > 0:
+                # logger.log("INFO", f"Skipping container task {task.get('id')}")
                 continue
 
+            # logger.log("INFO", f"Processing leaf task {task.get('id')}")
             actions = self.generate_atomic_actions_for_task(task, logger)
 
             if not actions:
                 # Fallback if LLM fails
+                logger.log(
+                    "WARNING", f"No actions generated for {task.get('id')}, using fallback.")
                 actions = [{
                     "action_id": f"{task.get('id')}.a",
                     "instruction": task.get('description') or task.get('title'),
@@ -155,15 +172,9 @@ Technical Architecture:
 
                     final_plan_strings.append(task_str)
 
-        # Determine a run command.
-        # The PO agent usually guesses this. We can ask the LLM or default to something.
-        # For now, let's try to extract it or just return a placeholder.
-        # We can add a small step to ask for the run command if needed, or just infer it.
-        # Let's infer it from the architecture or just leave it empty for the user to provide/dev agent to figure out.
-        # Existing PO agent does: returns `data["run_command"]`.
-        # Let's add a quick heuristic or LLM call for the run command if we want to be fully compatible.
-        # Or just hardcode "python app.py" / "npm start" based on architecture.
+        logger.log("INFO", f"Final plan has {len(final_plan_strings)} items.")
 
+        # Determine a run command.
         run_command = "python app.py"  # Default fallback
         if "flask" in str(technical_architecture).lower():
             run_command = "python app.py"

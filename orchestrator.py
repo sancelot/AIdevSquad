@@ -9,7 +9,7 @@ import docker
 from CostTracker import CostTracker
 from dotenv import load_dotenv
 from agents import (CodeReviewerAgent, DocumentationAgent, ProductOwnerAgent, DeveloperAgent,
-                    RequirementsAnalystAgent, SoftwareArchitectAgent, TesterAgent, UnitTestAgent, configure_llm_and_embed)
+                    RequirementsAnalystAgent, SoftwareArchitectAgent, TesterAgent, UnitTestAgent, configure_llm_and_embed, SADTSARTPlannerAgent)
 import shutil
 import json
 from llama_index.core import VectorStoreIndex, Document
@@ -91,6 +91,7 @@ class Orchestrator:
         self.unit_test_agent = UnitTestAgent(llm_class, llm_args)
         self.requirements_agent = RequirementsAnalystAgent(llm_class, llm_args)
         self.architect_agent = SoftwareArchitectAgent(llm_class, llm_args)
+        self.sadt_sart_agent = SADTSARTPlannerAgent(llm_class, llm_args)
 
     def _get_project_diff_since_last_commit(self):
         """Returns a git diff of all staged and unstaged changes against the last commit."""
@@ -528,126 +529,6 @@ env/
         tree_lines = format_tree(file_tree)
         return ".\n" + "\n".join(tree_lines)
 
-    # def _execute_react_loop(self, task, max_steps=10):
-    #     MAX_JSON_RETRIES = 3
-    #     invalid_json_count = 0
-    #     recent_actions = []  # FIX #2: Loop detection
-    #     MAX_REPEATED_ACTIONS = 3
-    #     """Executes the full Think-Act loop for a single task."""
-
-    #     # This history is specific to THIS task and is reset each time.
-    #     conversation_history = ""
-
-    #     for step in range(max_steps):
-    #         self.logger.start_step(step + 1, max_steps)
-
-    #         # The RAG context is retrieved once at the beginning, or can be updated
-    #         # rag_context = self._get_rag_context(task)
-
-    #         try:
-    #             # Call the agent with the current history
-    #             response_json = self.dev_agent.execute_task(task)
-    #             # FIXME task, rag_context, conversation_history,self.logger
-    #             # )
-    #             self.cost_tracker.calculate_and_print_cost(self.model_name)
-    #             invalid_json_count = 0
-    #         except ClientError as e:
-    #             if "RESOURCE_EXHAUSTED" in str(e):
-    #                 print("\n" + "="*60)
-    #                 print(
-    #                     "🚫 Halted: Google API daily quota has been exceeded during development.")
-    #                 print(" Please upgrade to a paid plan or wait 24 hours.")
-    #                 print("="*60)
-    #                 return False  # Signal failure for this task
-    #             else:
-    #                 # It's a different kind of client error, so let it crash for now
-    #                 raise e
-    #         except ValueError as e:  # Catch our custom parsing error
-    #             if "Invalid JSON response" in str(e):
-    #                 invalid_json_count += 1
-    #                 if invalid_json_count >= MAX_JSON_RETRIES:
-    #                     self.logger.log(
-    #                         "ERROR", f"Agent failed to produce valid JSON after {MAX_JSON_RETRIES} attempts")
-    #                     return False
-    #                 print(f"🧠 Agent produced invalid JSON. Retrying with feedback.")
-    #                 # The full error message becomes the feedback for the next step.
-    #                 conversation_history += f"Step {step+1} (FAILED):\n"
-    #                 conversation_history += f"Thought: Failed to generate valid JSON.\n"
-    #                 conversation_history += f"Action: None.\n"
-    #                 conversation_history += f"Observation: {e}\n\n"
-    #                 continue  # Skip to the next iteration of the loop
-    #             else:
-    #                 raise e  # Re-raise other ValueErrors
-    #         thought = response_json.get("thought", "")
-    #         tool_call = response_json.get("tool_call")
-    #         self.logger.log_event_in_step("thought", {"thought": thought})
-
-    #         # Append the agent's thought to the history
-    #         conversation_history += f"Step {step+1}:\nThought: {thought}\n"
-
-    #         tool_name = tool_call.get("tool_name")
-
-    #         if not tool_call or tool_name == "finish":
-    #             self.logger.log_event_in_step(
-    #                 "finish", {"message": "Agent finished the task."})
-    #             return True
-
-    #         # Execute the tool
-    #         try:
-    #             tool_result = self._execute_tool_call(tool_call)
-    #             self.logger.log_event_in_step(
-    #                 "tool_result", {"result": tool_result})
-    #         except Exception as e:
-    #             tool_result = f"CRITICAL TOOL ERROR: {str(e)}"
-
-    #             # Log this error as a "tool result" so it appears in the step
-    #             self.logger.log_event_in_step("tool_result", {
-    #                 "result": tool_result,
-    #                 "is_error": True  # Add a flag for the UI
-    #             })
-    #             is_success = False
-    #         # Check if the tool execution resulted in an error
-    #         # A simple heuristic: our tool error messages start with "Error:"
-    #         is_success = not (isinstance(tool_result, str)
-    #                           and tool_result.upper().startswith("Error:"))
-
-    #         self.metrics_tracker.track_tool_call(tool_name, is_success)
-
-    #         # Format the result and append the action and observation to the history
-    #         tool_name = tool_call.get("tool_name")
-    #         tool_args = tool_call.get("arguments")
-    #         action_signature = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
-    #         recent_actions.append(action_signature)
-    #         if len(recent_actions) >= MAX_REPEATED_ACTIONS:
-    #             last_n = recent_actions[-MAX_REPEATED_ACTIONS:]
-    #             if len(set(last_n)) == 1:
-    #                 warning = (
-    #                     f"\n⚠️ WARNING: You've called '{tool_name}' with identical arguments "
-    #                     f"{MAX_REPEATED_ACTIONS} times in a row. You appear stuck in a loop. "
-    #                     "Try a different approach or call finish if the task is complete.\n\n"
-    #                 )
-    #                 conversation_history += warning
-    #                 self.logger.log(
-    #                     "WARNING", f"Loop detected: {action_signature}")
-
-    #         observation = ""
-    #         if isinstance(tool_result, (list, dict)):
-    #             observation = json.dumps(tool_result)
-    #         else:
-    #             observation = str(tool_result)
-
-    #         # To avoid polluting the history with huge file contents, we can truncate it.
-    #         if len(observation) > 1000:
-    #             observation = observation[:1000] + "\n... (truncated)"
-
-    #         conversation_history += f"Action: Called tool `{tool_name}` with arguments `{tool_args}`.\n"
-    #         conversation_history += f"Observation: {observation}\n\n"
-
-    #     else:
-    #         self.logger.log(
-    #             "WARNING", f"Max steps ({max_steps}) reached for task '{task}'.")
-    #         return False
-
     def _run_clarification_phase(self):
         self.logger.log_phase("Requirements Clarification")
         # We'll treat the whole clarification process as one task.
@@ -740,15 +621,17 @@ env/
                     "INFO", f"Architecture designed: {self.technical_architecture}")
 
             if not self.plan:
-                self.logger.log_phase("Product Owner Planning")
                 self.logger.log_task(
-                    1, 1, "Generate project plan from user requirements")
+                    1, 1, "Generate project plan from user requirements using SADT/SART")
                 # Treat planning as a single-step task
                 self.logger.start_step(1, 1)
-                print("--- 🤖 Phase 1: Product Owner Planning ---")
-                self.plan, self.run_command = self.po_agent.create_plan(
+                print("--- 🤖 Phase 1: SADT/SART Planning ---")
+                self.plan, self.run_command = self.sadt_sart_agent.create_plan(
                     self.user_prompt, self.technical_architecture, self.logger)
+
                 self.cost_tracker.calculate_and_print_cost(self.model_name)
+
+                print("result", self.plan, self.run_command)
 
                 if not self.plan or not self.run_command:
                     self.logger.log(
