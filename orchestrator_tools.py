@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 from typing import Dict, Any, List, Literal
 from tools import get_code_summary
 from tools.universal_refactoring import add_code_block as _add_code_block,    refactor_rename_symbol as _refactor_rename_symbol, delete_code_block as _delete_code_block
@@ -381,3 +382,22 @@ class OrchestratorTools:
             "message": f"Review submitted with {len(issues_list)} issue(s)",
             "issues": issues_list
         }
+
+    async def call_agent(self, agent_name: str, message: str) -> str:
+        """
+        Call another agent to ask for help, clarification, or a review.
+        Args:
+            agent_name: The name of the agent to call (e.g., "CodeReviewerAgent", "ProductOwnerAgent", "SoftwareArchitectAgent").
+            message: The question or request for the agent.
+        """
+        agent = self.orchestrator.get_agent_by_name(agent_name)
+        if not agent:
+            return f"Error: Agent '{agent_name}' not found. Available agents: {self.orchestrator.get_available_agent_names()}"
+
+        # We use the standardized chat method
+        try:
+            response = await agent.chat(message)
+
+            return response
+        except Exception as e:
+            return f"Error calling agent {agent_name}: {str(e)}"

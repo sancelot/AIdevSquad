@@ -12,6 +12,11 @@ from llama_index.core.agent.workflow import AgentStream, ToolCallResult, AgentOu
 class DeveloperAgent(BaseAgent):
     def __init__(self, llm_class, llm_args, orchestrator_tools, logger):
         super().__init__(llm_class, llm_args, temperature=0.1, agent_name="DeveloperAgent")
+        team_manifest = """
+        AVAILABLE TEAMMATES:
+        1. ProductOwnerAgent: Holds the master plan. Consult them if logic is ambiguous or if you need to cut scope.
+        2. CodeReviewerAgent: Expert in security and patterns. Consult them *early* for architectural advice, not just at the end.
+        """
         tools = [
             # === SEMANTIC REFACTORING TOOLS (PREFERRED) ===
             FunctionTool.from_defaults(
@@ -132,35 +137,43 @@ Example: Remove obsolete code without manual text matching."""
                 """
             ),
             FunctionTool.from_defaults(fn=orchestrator_tools.get_code_summary,
-                                       description="Parse a file (AST for Python) and return high-level structure: classes, functions with arguments, imports, and global variables. Use to understand file structure without reading full content.")
+                                       description="Parse a file (AST for Python) and return high-level structure: classes, functions with arguments, imports, and global variables. Use to understand file structure without reading full content."),
+            FunctionTool.from_defaults(
+                fn=orchestrator_tools.call_agent,
+                name="collaborate_with_teammate",  # New semantic name
+                description=f"""Send a message to a teammate to discuss the task, ask for advice, or request a review.
 
-            # ... add all other tools
+                This is a chat interface. You can send code snippets, error logs, or implementation plans.
+
+                {team_manifest}
+
+                Returns: The teammate's response (which may include suggested code or feedback).
+                """
+            )
         ]
 
         self.logger = logger
-        system_message = """You are an expert, surgical AI Software Engineer. Your goal is to solve the user's task by making precise, minimal changes to the codebase by thinking step-by-step and using tools.
+        system_message = """You are a Senior Software Engineer working in a high-performance AI team. 
+Your goal is not just to write code, but to ship a robust, agreed-upon solution.
 
-**--- CORE DIRECTIVES ---**
-1.  **FOCUS ON THE CURRENT TASK:** Your goal is to execute ONLY the single task described in the "YOUR CURRENT ASSIGNMENT" section of the user prompt.
-2.  **DO NOT JUMP AHEAD:** Do not work on "Upcoming Tasks" or any task other than the one currently assigned.
-3.  **USE REFERENCE DOCUMENTS:** The user prompt will contain reference documents (Mission, Blueprint, Plan). Use them to understand the context and ensure your work aligns with the project goals, but do not act on them directly.
-4.  **BE SURGICAL:** NEVER use `write_file` to modify an existing file. `write_file` is ONLY for creating NEW files. To modify a file, you MUST use `read_file` first, then a precise tool like `insert_text` or `replace_text`.
-5.  **PLAN COMPLEX TASKS:** If a task involves multiple changes, create a short internal checklist in your 'Thought' and execute it step-by-step.
-6.  **VERIFY YOUR WORK:** Before finishing, reflect on your changes. Does the code fully complete the CURRENT TASK? Are all dependencies (imports, routes) met?
+**YOUR WORKING STYLE:**
+1.  **You are NOT a solo worker.** You are part of a swarm. Complex problems require discussion.
+2.  **Iterative Development:** Don't try to write the whole file in one shot. Write the skeleton, **ask the Reviewer if the structure looks right**, then fill in the logic.
+3.  **Context Switching:** It is acceptable to pause coding to clarify a requirement with the ProductOwner, then return to coding.
 
+**WHEN TO COLLABORATE:**
+-   **Before Coding:** If the task is vague, ask the `ProductOwnerAgent`.
+-   **During Coding:** If you are touching critical legacy code, ask the `CodeReviewerAgent` "I am planning to change X to Y, does this break anything?"
+-   **After Coding:** Ask the `CodeReviewerAgent` to verify your specific changes.
 
-**REASONING PROCESS (Read -> Plan -> Act -> Verify):**
-1.  **Read:** If you need to know the state of a file, use `read_file`.
-2.  **Plan:** Formulate a plan, including a checklist if needed.
-3.  **Act:** Execute your plan by calling the appropriate tool.
-4.  **Verify:** After acting, check your work and its dependencies. If more changes are needed, go back to step 2.
-5.  **Finish:** When the task is truly complete and verified, your final thought should be "The task is complete," and you should not call any more tools.
+**THE LOOP:**
+1.  **Plan:** Read files and map out changes.
+2.  **Consult (Optional but recommended):** If the plan is complex, run it by a teammate via `collaborate_with_teammate`.
+3.  **Execute:** Use your coding tools.
+4.  **Verify:** Check your work.
+5.  **Sign-off:** You cannot consider the task done until you are confident the changes meet the team's standards.
 
-**FORMATTING CODE WITHIN JSON STRINGS:** When you provide a block of code (Python, HTML, JSON, etc.) as a string value in an argument, you MUST ensure it is a valid JSON string literal. This means:
-    *   Use `\n` for all newlines.
-    *   Escape all double quotes (`"`) inside the code with a backslash (`\"`).
-    *   Escape all backslashes (`\`) inside the code with another backslash (`\\`).
-
+**Refrain from guessing.** If a variable name or logic is unclear, asking a teammate is cheaper than rewriting it later.
 """
         self.streaming = True
         self.agent = ReActAgent(llm=self.llm, verbose=False,
@@ -283,3 +296,68 @@ Example: Remove obsolete code without manual text matching."""
             "llm_response", {"response": final_answer_str})
 
         return True, final_answer_str, tool_calls
+
+    async def chat(self, message: str) -> str:
+        """
+        Handle a chat message from another agent (e.g. ProductOwnerAgent, CodeReviewerAgent).
+        We create a temporary ReActAgent to allow tool usage (reading files, checking code) 
+        without full task execution overhead.
+        """
+        chat_system_message = """You are a Senior Software Engineer being consulted by a teammate.
+        You have access to all your development tools (reading files, listing files, etc.).
+        
+        Answer the teammate's question directly and helpfully.
+        You can use tools to check the code or project state if needed to answer accurately.
+        """
+
+        # Create a temporary agent for this interaction
+        # We reuse the same tools, but in a new agent instance for this specific conversation context
+        chat_agent = ReActAgent(
+            llm=self.llm,
+            tools=self.agent.tools,  # Reuse the full toolset
+            system_prompt=chat_system_message,
+            verbose=False,
+            streaming=True
+        )
+
+        ctx = Context(chat_agent)
+        handler = chat_agent.run(message, ctx=ctx)
+
+        final_answer_str = ""
+
+        try:
+            async for ev in handler.stream_events():
+                if isinstance(ev, ToolCallResult):
+                    # Log nested tool calls
+                    self.logger.log_event_in_step(
+                        "tool_call", {
+                            "tool_name": ev.tool_name,
+                            "tool_args": ev.tool_kwargs,
+                            "nested_agent": "DeveloperAgent(Chat)"
+                        }
+                    )
+                    self.logger.log_event_in_step(
+                        "tool_result", {
+                            "result": ev.tool_output.content,
+                            "nested_agent": "DeveloperAgent(Chat)"
+                        }
+                    )
+                elif isinstance(ev, AgentOutput):
+                    final_answer_str = str(ev.response)
+                elif isinstance(ev, AgentStream):
+                    # Accumulate stream if needed, or just let it flow
+                    pass
+
+            self.logger.log_event_in_step(
+                "llm_response", {
+                    "response": final_answer_str,
+                    "nested_agent": "DeveloperAgent(Chat)"
+                }
+            )
+            return final_answer_str
+
+        except Exception as e:
+            error_msg = f"Error during DeveloperAgent chat: {str(e)}"
+            print(error_msg)
+            traceback.print_exc()
+            return error_msg

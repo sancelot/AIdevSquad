@@ -86,7 +86,7 @@ def configure_llm_and_embed(provider="ollama", model=None):
     Configures and returns LLM and embedding models based on the provider.
     Also sets the global embedding model for LlamaIndex.
     """
-    print(f"🔧 Configuring models for provider: {provider.upper()}")
+    print(f"Configuring models for provider: {provider.upper()}")
 
     if provider == "google":
         # Assurez-vous que la clé API est chargée (déjà fait par load_dotenv dans orchestrateur.py)

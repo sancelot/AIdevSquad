@@ -1,4 +1,4 @@
-# Autonomous AI Software Development Team
+# Autonomous AI Software Development Team (AiDevSquad)
 
 This project implements a multi-agent AI system designed to autonomously develop, review, test, and document software projects from a high-level user prompt. It simulates a team of AI agents, each with a specialized role, working together to deliver a complete, version-controlled software application.
 
@@ -6,14 +6,15 @@ This project implements a multi-agent AI system designed to autonomously develop
 
 - **Multi-Agent Architecture:** Simulates a real development team with specialized agents:
 
-  - `ProductOwnerAgent`: Creates a high-level plan from a user prompt.
+  - `SADTSARTPlannerAgent`: The primary planner that uses SADT/SART methodology to generate hierarchical workplans and atomic actions.
+  - `ProductOwnerAgent`: Acts as the vision holder and requirements consultant, answering agent questions to clarify ambiguity.
   - `DeveloperAgent`: Executes tasks using a ReAct (Reason+Act) model and a suite of tools.
   - `CodeReviewerAgent`: Analyzes the entire codebase for integration issues, bugs, and inconsistencies.
   - `UnitTestAgent`: Generates `pytest` unit tests for the generated code.
   - `DocumentationAgent`: Writes the final project `README.md` file.
 
-- **Tool-Based Actions (ReAct):** The `DeveloperAgent` uses a set of tools (`list_files`, `read_file`, `write_file`, etc.) to interact with the codebase, enabling complex, multi-step tasks like refactoring.
-- **Self-Healing & Iterative Refinement:** The system includes a code review loop where issues are identified and fed back to the `DeveloperAgent` for correction.
+- **Flexible Agent Collaboration:** Agents can now communicate dynamically using the `call_agent` tool. For example, a `DeveloperAgent` can ask the `CodeReviewerAgent` for immediate feedback on a specific file, breaking the rigid sequential handoff structure.
+- **Tool-Based Actions (ReAct):** The `DeveloperAgent` uses a set of tools (`list_files`, `read_file`, `write_file`, `call_agent`, etc.) to interact with the codebase and other agents.
 - **Automated Version Control:** Every completed task is automatically committed to a Git repository, providing a complete, auditable history of the AI's work.
 - **RAG-Powered Context:** Uses Retrieval-Augmented Generation (RAG) via LlamaIndex to provide agents with relevant code context, overcoming LLM context window limitations.
 - **Pluggable LLM Providers:** Easily switch between local models (via Ollama) and cloud-based APIs (like Google Gemini).
@@ -24,12 +25,11 @@ This project implements a multi-agent AI system designed to autonomously develop
 
 The system is orchestrated by a central `Orchestrator` class that manages the project lifecycle through several distinct phases:
 
-1.  **Planning:** The `ProductOwnerAgent` receives the user's prompt and generates a high-level development plan and a final run command.
-2.  **Development:** The `Orchestrator` iterates through each task in the plan. For each task, it invokes the `DeveloperAgent` in a ReAct loop, where the agent uses its tools to complete the task over several steps.
-3.  **Code Review:** After all development tasks are complete, the `CodeReviewerAgent` inspects the entire codebase. If issues are found, they are converted into new "fix-it" tasks for the `DeveloperAgent`. This loop continues until no issues are found or a cycle limit is reached.
-4.  **Unit Testing (Optional):** If enabled, the `UnitTestAgent` generates `pytest` files for the Python code.
-5.  **Final Validation:** The `TesterAgent` runs the test suite (if any) and attempts to start the main application to ensure it's executable.
-6.  **Documentation:** If all previous phases succeed, the `DocumentationAgent` generates a `README.md` file for the newly created project.
+1.  **Planning:** The `SADTSARTPlannerAgent` analyzes the requirement and generates a detailed hierarchical plan (SADT/SART). The `ProductOwnerAgent` is available for consultation throughout the project.
+2.  **Development & Collaboration:** The `Orchestrator` iterates through each task in the plan. The `DeveloperAgent` executes the task using its tools. Crucially, the **DeveloperAgent is responsible for quality assurance**. It can use the `call_agent` tool to request ad-hoc reviews or advice from the `CodeReviewerAgent` or `ProductOwnerAgent` at any time during the task.
+3.  **Unit Testing (Optional):** If enabled, the `UnitTestAgent` generates `pytest` files for the Python code.
+4.  **Final Validation:** The `TesterAgent` runs the test suite (if any) and attempts to start the main application to ensure it's executable.
+5.  **Documentation:** If all previous phases succeed, the `DocumentationAgent` generates a `README.md` file for the newly created project.
 
 
 
@@ -133,6 +133,9 @@ A simple Flask-based UI is available to visualize the execution traces.
     ```
 
 4.  Open your browser to **`http://127.0.0.1:5001`** to see the dashboard.
+
+**New Feature: Nested Collaboration View**
+The trace view now supports visualizing nested agent calls. When a `DeveloperAgent` consults a `CodeReviewerAgent` or `ProductOwnerAgent` via chat, the sub-agent's thoughts and tool usage are displayed with indentation and distinct styling, providing a clear "call tree" of the collaboration.
 
 ## 🤝 Contributing
 

@@ -93,6 +93,23 @@ class Orchestrator:
         self.architect_agent = SoftwareArchitectAgent(llm_class, llm_args)
         self.sadt_sart_agent = SADTSARTPlannerAgent(llm_class, llm_args)
 
+    def get_agent_by_name(self, name):
+        name = name.lower()
+        if "developer" in name:
+            return self.dev_agent
+        elif "reviewer" in name:
+            return self.reviewer_agent
+        elif "product" in name or "owner" in name:
+            return self.po_agent
+        elif "architect" in name:
+            return self.architect_agent
+        elif "requirement" in name:
+            return self.requirements_agent
+        return None
+
+    def get_available_agent_names(self):
+        return ["DeveloperAgent", "CodeReviewerAgent", "ProductOwnerAgent", "SoftwareArchitectAgent", "RequirementsAnalystAgent"]
+
     def _get_project_diff_since_last_commit(self):
         """Returns a git diff of all staged and unstaged changes against the last commit."""
         if not self.repo:
@@ -631,8 +648,6 @@ env/
 
                 self.cost_tracker.calculate_and_print_cost(self.model_name)
 
-                print("result", self.plan, self.run_command)
-
                 if not self.plan or not self.run_command:
                     self.logger.log(
                         "ERROR", "The Product Owner failed to generate a plan. Halting.")
@@ -718,174 +733,26 @@ Relevant Code Context (from RAG):
                         "ERROR", f"Agent failed to complete the development for task '{task}'. Halting.")
                     return
 
-                # --- IMMEDIATE CODE REVIEW LOOP FOR THIS TASK ---
-                max_review_cycles_per_task = 3
-                review_passed = False
-                for cycle in range(max_review_cycles_per_task):
-                    self.logger.log(
-                        "INFO", f"Starting review cycle {cycle + 1}/{max_review_cycles_per_task} for task '{task}'")
-                    self.metrics_tracker.increment_review_cycle(task)
+                # --- IMMEDIATE CODE REVIEW LOOP REMOVED ---
+                # The DeveloperAgent is now responsible for calling the CodeReviewerAgent
+                # via the 'call_agent' tool if it needs a review.
+                # We assume that if the DeveloperAgent finishes, the task is done.
 
-                    git_diff = self._get_project_diff_since_last_commit()  # New method needed!
-                    if not git_diff.strip():
-                        self.logger.log(
-                            "INFO", "No file changes detected for this task. Review skipped.")
-                        review_passed = True
-                        break
-                    # Treat each review cycle as a step
-                    self.logger.start_step(
-                        cycle + 1, max_review_cycles_per_task)
-                    self.logger.log_event_in_step(
-                        "git_diff", {"diff": git_diff})
+                self.logger.log(
+                    "INFO", f"Task '{task}' completed by DeveloperAgent.")
+                self.metrics_tracker.complete_task(
+                    task, success=True, review_passed_on_first_try=True)
 
-                    # Pass the previous issues to the reviewer so it has memory!
-                    previous_issues = issues if cycle > 0 else None
-                    issues, reviewer_tool_usage = await self.reviewer_agent.review_code(task,
-                                                                                        self._get_project_structure_string(), git_diff,  previous_issues
-                                                                                        )
+                self._update_index_incrementally()
+                # Commit changes after task completion
+                self._git_commit(f"Complete task: {task}")
 
-                    if reviewer_tool_usage:
-                        self.logger.log(
-                            "INFO", f"CodeReviewerAgent used {len(reviewer_tool_usage)} tool(s) during investigation.")
-                        for tool_call in reviewer_tool_usage:
-                            tool_name = tool_call.get(
-                                'tool_name', 'unknown_tool')
-                            tool_result = tool_call.get('result', '')
-
-                            # Log the detailed event for traceability
-                            self.logger.log_event_in_step(
-                                "tool_result",
-                                {
-                                    "agent": "CodeReviewerAgent",
-                                    "tool_name": tool_name,
-                                    "arguments": tool_call.get('arguments', {}),
-                                    "result": tool_result
-                                }
-                            )
-                            # Always a success for the reviewer since they are read-only
-                            self.metrics_tracker.track_tool_call(
-                                tool_name, success=True)
-                    self.cost_tracker.calculate_and_print_cost(self.model_name)
-                    self.logger.log(
-                        "INFO", f"Reviewer found {len(issues)} issues.")  # FIXME
-
-                    self.logger.log_event_in_step(
-                        "review_result", {"issues": issues})  # FIXME
-
-                    if not issues:
-                        self.logger.log(
-                            "INFO", "Code review for this task passed!")
-                        # FIXME code dbg
-                        print(f" review_passed_on_first_try={cycle == 0}")
-                        self.metrics_tracker.complete_task(
-                            task, success=True, review_passed_on_first_try=(cycle == 0))
-                        review_passed = True
-                        break
-
-                    # !!!! IMPORTANT FIX ISSUES ONE BY ONE !!!!
-                    self.logger.log(
-                        "WARNING", f"Review found {len(issues)} issues. Attempting to fix them one by one.")
-
-                    surgical_fixes_issues = [iss for iss in issues if iss.get(
-                        'type') in ['typo', 'style_violation', 'import_error', 'naming_convention']]
-                    complex_dev_issues = [iss for iss in issues if iss.get(
-                        'type') not in ['typo', 'style_violation', 'import_error', 'naming_convention']]
-                    if complex_dev_issues:
-                        # if a complex problem persists, we don't spend time with minor corrections
-                        # We instantly launch replan.
-                        self.logger.log(
-                            "WARNING", f"Found {len(complex_dev_issues)} complex issues. The plan is invalid. Invoking Product Owner for replanning.")
-                        for issue in complex_dev_issues:
-                            print(issue)
-                        # Récupérer les tâches déjà complétées pour donner le contexte au PO
-                        completed_tasks = self.plan[:current_task_index]
-
-                        # Appeler le PO pour qu'il crée un nouveau plan
-                        new_plan_tasks = self.po_agent.replan_project(
-                            self.user_prompt,  # Exigences fonctionnelles
-                            self.plan,        # Le plan original complet
-                            completed_tasks,  # Ce qui a déjà été fait
-                            task,             # La tâche qui a échoué
-                            complex_dev_issues,  # Pourquoi elle a échoué
-                            self.logger
-                        )
-
-                        if new_plan_tasks is None:
-                            self.logger.log(
-                                "ERROR", "Replanning failed. Halting execution.")
-                            sys.exit(1)
-
-                        self.logger.log(
-                            "INFO", "Product Owner has created a new plan:")
-                        for i, new_task_item in enumerate(new_plan_tasks):
-                            print(f"  {i+1}. {new_task_item}")
-
-                        # Remplacer les anciennes tâches restantes par le nouveau plan
-                        self.plan = completed_tasks + new_plan_tasks
-
-                        # FIXME debug
-                        for i, new_task_item in enumerate(self.plan):
-                            print(f"  {i+1}. {new_task_item}")
-
-                        # La tâche actuelle a échoué et a été remplacée. La boucle continuera
-                        # à partir de `current_task_index`, qui est maintenant la première nouvelle tâche du plan corrigé.
-                        review_passed = False  # S'assurer que la tâche actuelle est marquée comme échouée
-                        self.logger.log(
-                            "ERROR", f"Task '{task}' failed and was replanned. Continuing with the new plan.")
-                        # Sortir de la boucle de revue
-                        break
-                    elif surgical_fixes_issues:
-                        all_surgical_fixes_succeeded = True
-                        self.logger.log(
-                            "INFO", f"No complex issues found. Attempting to fix {len(surgical_fixes_issues)} simple issues...")
-
-                        fix_task = f"Your previous work for '{task}' had issues: {json.dumps(surgical_fixes_issues)}. Please fix them."
-                        fix_success, _, tool_calls = await self.dev_agent.execute_task(fix_task)
-                        if not fix_success:
-                            self.logger.log(
-                                "ERROR", f"Agent failed to fix issues: {issues}")
-                            all_surgical_fixes_succeeded = False
-
-                        if not all_surgical_fixes_succeeded:
-                            break  # Exit the review loop, the task failed
-                    else:
-                        # No problem found
-                        review_passed = True
-                        break
-                # --- DECISION POINT: COMMIT OR HALT ---
-                if review_passed:
-                    # BEFORE  commit, update RAG index with changes.
-                    self._update_index_incrementally()
-                    commit_message = f"feat: Complete and review task '{task}'"
-                    self._git_commit(commit_message)
-                    self.metrics_tracker.complete_task(
-                        task, success=True, review_passed_on_first_try=(cycle == 0))
-                    self._save_state(current_task_index)
-                    self.logger.log(
-                        "INFO", "Task approved, committed, and state saved.")
-                    current_task_index += 1
-
-                else:
-                    # Task failed review - do NOT commit
-                    self.logger.log(
-                        "ERROR", f"Task '{task}' failed code review after {cycle+1} attempt(s).")
-
-                    if complex_dev_issues:
-                        # New tasks were added to plan - continue to fix them
-                        self.logger.log(
-                            "INFO", "Complex issues found. New corrective tasks added to plan. Continuing...")
-                        self.metrics_tracker.complete_task(
-                            task, success=False, review_passed_on_first_try=False)
-                    else:
-                        # Simple issues couldn't be fixed - halt execution
-                        self.logger.log(
-                            "ERROR", "Failed to fix issues. Halting execution.")
-                        self.metrics_tracker.complete_task(
-                            task, success=False, review_passed_on_first_try=False)
-                        sys.exit(1)
-
-                    # sys.exit(1)
-                    # return
+                self.last_completed_task_index = current_task_index
+                self._save_state(self.last_completed_task_index)
+                current_task_index += 1
+                continue  # Move to next task
+                # Residual code removed.
+                # The loop continues to the next task.
 
             project_completed_successfully = True
 
@@ -1004,8 +871,11 @@ if __name__ == "__main__":
     # Usage: python orchestrator.py <project_name> [--new] [--google] ...
     # Ex: python orchestrator.py contract_manager_app --new
     # Ex: python orchestrator.py new_website --prompt initial_ideas.txt
-
-    project_name = sys.argv[1]
+    try:
+        project_name = sys.argv[1]
+    except IndexError:
+        print("Error: Missing project name.")
+        sys.exit(1)
     initial_prompt_file = None
     if "--prompt" in sys.argv:
         try:

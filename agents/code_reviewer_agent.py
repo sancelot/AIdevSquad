@@ -187,9 +187,66 @@ Begin your investigation now."""
             # Failure case: Parsing failed, or the JSON structure was wrong.
             print(
                 "❌ Error: CodeReviewerAgent failed to return a valid list of issues.")
-            # Return a generic error message as an issue. This will trigger a fix-it loop.
-            # This is better than returning an empty list, which would falsely signal success.
             error_issue = [{"severity": "critical", "type": "parsing_error", "file": "N/A", "line": 0,
                             "description": "CodeReviewerAgent failed to produce a valid response.", "suggestion": "The LLM response was malformed or missing the 'issues' key."}]
             return error_issue, tool_usage_history
         # ----------------------------------------
+
+    async def chat(self, message: str) -> str:
+        """
+        Handle a chat message from another agent (e.g. DeveloperAgent).
+        We create a temporary ReActAgent to allow tool usage (reading files) 
+        without the strict 'submit_review' constraint of the main review loop.
+        """
+        chat_system_message = """You are an expert code reviewer. You are being consulted by a developer.
+        You have access to tools to read files and analyze code.
+        Answer the developer's question directly and helpfully.
+        Do NOT call `submit_review`. Just answer in text.
+        """
+
+        # Create a temporary agent for this interaction
+        chat_agent = ReActAgent(
+            llm=self.llm,
+            tools=self.agent.tools,  # Reuse the read-only tools
+            system_prompt=chat_system_message,
+            verbose=False,
+            streaming=True
+        )
+
+        ctx = Context(chat_agent)
+        handler = chat_agent.run(message, ctx=ctx)
+        final_answer_str = ""
+
+        try:
+            async for ev in handler.stream_events():
+                if isinstance(ev, ToolCallResult):
+                    # Log nested tool calls
+                    self.logger.log_event_in_step(
+                        "tool_call", {
+                            "tool_name": ev.tool_name,
+                            "tool_args": ev.tool_kwargs,
+                            "nested_agent": "CodeReviewerAgent(Chat)"
+                        }
+                    )
+                    self.logger.log_event_in_step(
+                        "tool_result", {
+                            "result": ev.tool_output.content,
+                            "nested_agent": "CodeReviewerAgent(Chat)"
+                        }
+                    )
+                elif isinstance(ev, AgentOutput):
+                    final_answer_str = str(ev.response)
+
+            self.logger.log_event_in_step(
+                "llm_response", {
+                    "response": final_answer_str,
+                    "nested_agent": "CodeReviewerAgent(Chat)"
+                }
+            )
+            return final_answer_str
+
+        except Exception as e:
+            error_msg = f"Error during CodeReviewerAgent chat: {str(e)}"
+            print(error_msg)
+            traceback.print_exc()
+            return error_msg

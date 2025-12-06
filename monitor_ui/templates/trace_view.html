@@ -181,27 +181,35 @@
         // Default to returning an object with a null postRender task
         let renderOutput = { element: container, postRender: null };
 
+        const isNested = event.nested_agent ? true : false;
+        
+        if (isNested) {
+             container.style.marginLeft = "20px";
+             container.style.borderLeft = "4px solid #6f42c1"; // Purple border for nested events
+             container.innerHTML += `<div style="font-size: 0.8em; color: #6f42c1; margin-bottom: 5px;">↳ On behalf of: <strong>${escapeHtml(event.nested_agent)}</strong></div>`;
+        }
+
         switch (event.type) {
           case "llm_call":
-            container.innerHTML = `<div class="collapsible event-header">▶️ <strong>LLM Call</strong> (Agent: ${
-              event.agent_name
+            container.innerHTML += `<div class="collapsible event-header">▶️ <strong>LLM Call</strong> (Agent: ${
+              event.agent_name || "Unknown"
             }) ${time_html}</div><div class="content"><pre>${escapeHtml(
               event.prompt
             )}</pre></div>`;
             break;
           case "llm_response":
-            container.innerHTML = `<div class="collapsible event-header">◀️ <strong>LLM Response</strong> ${time_html}</div><div class="content"><pre>${escapeHtml(
+            container.innerHTML += `<div class="collapsible event-header">◀️ <strong>LLM Response</strong> ${time_html}</div><div class="content"><pre>${escapeHtml(
               event.response
             )}</pre></div>`;
             break;
           case "thought":
-            container.innerHTML = `<p><strong>🧠 Thought:</strong> <em>${escapeHtml(
+            container.innerHTML += `<p><strong>🧠 Thought:</strong> <em>${escapeHtml(
               event.thought
             )}</em> ${time_html}</p>`;
             break;
           case "tool_call":
             content_pretty = JSON.stringify(event.tool_args, null, 2);
-            container.innerHTML = `<div class="collapsible event-header">▶️ <strong>Action:</strong> Calling <code>${escapeHtml(
+            container.innerHTML += `<div class="collapsible event-header">▶️ <strong>Action:</strong> Calling <code>${escapeHtml(
               event.tool_name
             )}</code> ${time_html}</div><div class="content"><strong>Arguments:</strong><pre>${escapeHtml(
               content_pretty
@@ -224,14 +232,14 @@
                 ? JSON.stringify(event.result, null, 2)
                 : event.result;
 
-            container.innerHTML = `
+            container.innerHTML += `
                 <div class="collapsible event-header" ${headerColor}>${headerText} ${time_html}</div>
                 <div class="content"><pre>${escapeHtml(
                   content_pretty
                 )}</pre></div>`;
             break;
           case "finish":
-            container.innerHTML = `<p><strong>✅ Finish:</strong> Agent has completed the task. ${time_html}</p>`;
+            container.innerHTML += `<p><strong>✅ Finish:</strong> Agent has completed the task. ${time_html}</p>`;
             break;
           case "review_result":
             if (event.issues && event.issues.length > 0) {
@@ -251,15 +259,15 @@
                             </li>`;
               });
               issuesHtml += "</ul>";
-              container.innerHTML = `<div><p><strong>⚠️ Review Found Issues:</strong></p>${issuesHtml}</div>`;
+              container.innerHTML += `<div><p><strong>⚠️ Review Found Issues:</strong></p>${issuesHtml}</div>`;
             } else {
-              container.innerHTML = `<p><strong>✅ Review Passed:</strong> No issues found.</p>`;
+              container.innerHTML += `<p><strong>✅ Review Passed:</strong> No issues found.</p>`;
             }
             break;
           case "git_diff":
             // The container will be the target for diff2html
             container.id = `diff-container-${Date.now()}-${Math.random()}`; // Unique ID
-            container.innerHTML = `<div class="collapsible event-header">▶️ <strong>Code Changes Submitted for Review</strong> ${time_html}</div>`;
+            container.innerHTML += `<div class="collapsible event-header">▶️ <strong>Code Changes Submitted for Review</strong> ${time_html}</div>`;
 
             // This postRender logic is what displays the diff. It's crucial.
             renderOutput.postRender = () => {
@@ -279,7 +287,7 @@
             break;
           default:
             content_pretty = JSON.stringify(event, null, 2);
-            container.innerHTML = `<div class="collapsible">▶️ <strong>Unknown Event:</strong> ${
+            container.innerHTML += `<div class="collapsible">▶️ <strong>Unknown Event:</strong> ${
               event.type
             } ${time_html}</div><div class="content"><pre>${escapeHtml(
               content_pretty
